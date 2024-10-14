@@ -7,15 +7,13 @@ const dataDir = path.join(__dirname, 'data');
 const shoppingListFile = path.join(dataDir, 'shopping-list.json');
 const uploadDir = path.join(__dirname, 'uploads');
 
-
+// Create directories if they don't exist
 if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir);
 }
-
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir);
 }
-
 if (!fs.existsSync(shoppingListFile)) {
     fs.writeFileSync(shoppingListFile, JSON.stringify([]));
 }
@@ -34,12 +32,26 @@ const storage = multer.diskStorage({
 // Initialize multer
 const upload = multer({ storage });
 
+// Serve static files from the uploadDir
+const serveImage = (req, res) => {
+    const filePath = path.join(uploadDir, req.url.split('/uploads/')[1]);
+    fs.readFile(filePath, (err, data) => {
+        if (err) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ message: 'Image not found' }));
+            return;
+        }
+        const ext = path.extname(filePath).slice(1);
+        res.writeHead(200, { 'Content-Type': `image/${ext}` });
+        res.end(data);
+    });
+};
+
+// Create HTTP server
 const server = http.createServer((req, res) => {
-    console.log(`Request URL: ${req.url}, Method: ${req.method}`);
     if (req.url === '/shopping-list' && req.method === 'GET') {
         getShoppingList(req, res);
     } else if (req.url === '/shopping-list' && req.method === 'POST') {
-        console.log('Posted.');
         addItem(req, res);
     } else if (req.url.match(/\/shopping-list\/\w+/) && req.method === 'PUT') {
         updateItem(req, res);
@@ -47,6 +59,8 @@ const server = http.createServer((req, res) => {
         patchItem(req, res);
     } else if (req.url.match(/\/shopping-list\/\w+/) && req.method === 'DELETE') {
         deleteItem(req, res);
+    } else if (req.url.startsWith('/uploads/')) {
+        serveImage(req, res); // Serve uploaded images
     } else {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ message: 'Route not found' }));
@@ -67,6 +81,8 @@ const getShoppingList = (req, res) => {
         res.end(data);
     });
 };
+
+// Add item with image upload
 const addItem = (req, res) => {
     upload.single('image')(req, res, (err) => {
         if (err) {
@@ -75,126 +91,49 @@ const addItem = (req, res) => {
             return;
         }
 
-        try {
-            // `req.body` will contain form data (excluding the file)
-            const newItem = {
-                id: req.body.id,
-                name: req.body.name,
-                quantity: Number(req.body.quantity), 
-                description: req.body.description,
-                price: parseFloat(req.body.price),
-                imagePath: req.file ? req.file.path : null 
-            };
+        const newItem = {
+            id: req.body.id,
+            name: req.body.name,
+            quantity: Number(req.body.quantity),
+            description: req.body.description,
+            price: parseFloat(req.body.price),
+            imagePath: req.file ? `/uploads/${req.file.filename}` : null // Use image URL
+        };
 
-            // Read the shopping list file
-            fs.readFile(shoppingListFile, 'utf8', (err, data) => {
+        fs.readFile(shoppingListFile, 'utf8', (err, data) => {
+            if (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ message: 'Failed to read shopping list' }));
+                return;
+            }
+
+            const shoppingList = JSON.parse(data);
+            const duplicateItem = shoppingList.find(item => String(item.id) === String(newItem.id));
+            if (duplicateItem) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ message: `Item with ID ${newItem.id} already exists` }));
+                return;
+            }
+
+            shoppingList.push(newItem);
+            fs.writeFile(shoppingListFile, JSON.stringify(shoppingList, null, 2), (err) => {
                 if (err) {
                     res.writeHead(500, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ message: 'Failed to read shopping list' }));
+                    res.end(JSON.stringify({ message: 'Failed to update shopping list' }));
                     return;
                 }
-
-                const shoppingList = JSON.parse(data);
-
-                // Check for duplicate ID
-                const duplicateItem = shoppingList.find(item => String(item.id) === String(newItem.id));
-                if (duplicateItem) {
-                    res.writeHead(400, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ message: `Item with ID ${newItem.id} already exists` }));
-                    return;
-                }
-
-                shoppingList.push(newItem);
-
-                fs.writeFile(shoppingListFile, JSON.stringify(shoppingList, null, 2), (err) => {
-                    if (err) {
-                        res.writeHead(500, { 'Content-Type': 'application/json' });
-                        res.end(JSON.stringify({ message: 'Failed to update shopping list' }));
-                        return;
-                    }
-                    res.writeHead(201, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify(newItem));
-                });
+                res.writeHead(201, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(newItem));
             });
-        } catch (error) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ message: 'Invalid data format' }));
-        }
-    });
-};
-
-
-const patchItem = (req, res) => {
-    const id = req.url.split('/')[2]; // Extract the ID from the URL
-
-    upload.single('image')(req, res, (err) => {
-        if (err) {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ message: 'Failed to upload file' }));
-            return;
-        }
-
-        let body = '';
-        req.on('data', chunk => {
-            body += chunk.toString();
-        });
-
-        req.on('end', () => {
-            try {
-                const patchData = JSON.parse(body);
-
-
-                // Read the shopping list file
-                fs.readFile(shoppingListFile, 'utf8', (err, data) => {
-                    if (err) {
-                        res.writeHead(500, { 'Content-Type': 'application/json' });
-                        res.end(JSON.stringify({ message: 'Failed to read shopping list' }));
-                        return;
-                    }
-
-                    let shoppingList = JSON.parse(data);
-                    const index = shoppingList.findIndex(item => String(item.id) === String(id));
-
-                    if (index === -1) {
-                        res.writeHead(404, { 'Content-Type': 'application/json' });
-                        res.end(JSON.stringify({ message: 'Item not found' }));
-                        return;
-                    }
-
-                    // Update the item with new data and image if uploaded
-                    shoppingList[index] = {
-                        ...shoppingList[index],
-                        ...patchData,
-                        imagePath: req.file ? req.file.path : shoppingList[index].imagePath
-                    };
-
-                    // Write the updated shopping list
-                    fs.writeFile(shoppingListFile, JSON.stringify(shoppingList, null, 2), err => {
-                        if (err) {
-                            res.writeHead(500, { 'Content-Type': 'application/json' });
-                            res.end(JSON.stringify({ message: 'Failed to update shopping list' }));
-                            return;
-                        }
-
-                        res.writeHead(200, { 'Content-Type': 'application/json' });
-                        res.end(JSON.stringify(shoppingList[index]));
-                    });
-                });
-            } catch (e) {
-                res.writeHead(400, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ message: 'Invalid JSON input' }));
-            }
         });
     });
 };
-
 
 const updateItem = (req, res) => {
-    const id = req.url.split('/')[2]; // Extract the ID from the URL
+    const id = req.url.split('/')[2];
 
     upload.single('image')(req, res, (err) => {
         if (err) {
-            console.error('File upload error:', err);
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ message: 'Failed to upload file' }));
             return;
@@ -206,22 +145,10 @@ const updateItem = (req, res) => {
         });
 
         req.on('end', () => {
-            console.log('Request body received:', body);
             try {
                 const updatedItem = JSON.parse(body);
-                
-                // Convert quantity and price to numbers
-                if (updatedItem.quantity) {
-                    updatedItem.quantity = Number(updatedItem.quantity);
-                }
-                if (updatedItem.price) {
-                    updatedItem.price = parseFloat(updatedItem.price);
-                }
-
-                // Read the shopping list file
                 fs.readFile(shoppingListFile, 'utf8', (err, data) => {
                     if (err) {
-                        console.error('Failed to read shopping list:', err);
                         res.writeHead(500, { 'Content-Type': 'application/json' });
                         res.end(JSON.stringify({ message: 'Failed to read shopping list' }));
                         return;
@@ -231,42 +158,44 @@ const updateItem = (req, res) => {
                     const index = shoppingList.findIndex(item => String(item.id) === String(id));
 
                     if (index === -1) {
-                        console.log('Item not found:', id);
                         res.writeHead(404, { 'Content-Type': 'application/json' });
                         res.end(JSON.stringify({ message: 'Item not found' }));
                         return;
                     }
 
-                    // Update the item with new data and image if uploaded
-                    shoppingList[index] = {
-                        ...shoppingList[index],
-                        ...updatedItem,
-                        imagePath: req.file ? req.file.path : shoppingList[index].imagePath // Only update if a new image is provided
-                    };
+                    // Delete old image if a new one is uploaded
+                    const oldImagePath = shoppingList[index].imagePath;
+                    if (req.file) {
+                        if (oldImagePath) {
+                            const oldImageFullPath = path.join(__dirname, oldImagePath);
+                            fs.unlink(oldImageFullPath, (err) => {
+                                if (err) {
+                                    console.error('Failed to delete old image:', err);
+                                }
+                            });
+                        }
+                        updatedItem.imagePath = `/uploads/${req.file.filename}`; // Update image path with new one
+                    }
+
+                    shoppingList[index] = { ...shoppingList[index], ...updatedItem };
 
                     fs.writeFile(shoppingListFile, JSON.stringify(shoppingList, null, 2), err => {
                         if (err) {
-                            console.error('Failed to update shopping list:', err);
                             res.writeHead(500, { 'Content-Type': 'application/json' });
                             res.end(JSON.stringify({ message: 'Failed to update shopping list' }));
                             return;
                         }
-
-                        console.log('Shopping list updated successfully:', shoppingList[index]);
                         res.writeHead(200, { 'Content-Type': 'application/json' });
                         res.end(JSON.stringify(shoppingList[index]));
                     });
                 });
             } catch (e) {
-                console.error('Invalid JSON input:', e);
                 res.writeHead(400, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ message: 'Invalid JSON input' }));
             }
         });
     });
 };
-
-
 const deleteItem = (req, res) => {
     const id = req.url.split('/')[2];
 
@@ -278,7 +207,7 @@ const deleteItem = (req, res) => {
         }
 
         let shoppingList = JSON.parse(data);
-        const index = shoppingList.findIndex(item => item.id === id);
+        const index = shoppingList.findIndex(item => String(item.id) === String(id));
 
         if (index === -1) {
             res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -286,9 +215,19 @@ const deleteItem = (req, res) => {
             return;
         }
 
-        shoppingList.splice(index, 1);
+        const itemToDelete = shoppingList[index];
+        if (itemToDelete.imagePath) {
+            const imagePath = path.join(__dirname, itemToDelete.imagePath);
+            fs.unlink(imagePath, (err) => {
+                if (err) {
+                    console.error('Failed to delete image:', err);
+                }
+            });
+        }
 
-        fs.writeFile(shoppingListFile, JSON.stringify(shoppingList), err => {
+        shoppingList = shoppingList.filter(item => String(item.id) !== String(id));
+
+        fs.writeFile(shoppingListFile, JSON.stringify(shoppingList, null, 2), (err) => {
             if (err) {
                 res.writeHead(500, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ message: 'Failed to update shopping list' }));
@@ -296,7 +235,7 @@ const deleteItem = (req, res) => {
             }
 
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ message: 'Item deleted' }));
+            res.end(JSON.stringify({ message: `Item with ID ${id} deleted` }));
         });
     });
 };
